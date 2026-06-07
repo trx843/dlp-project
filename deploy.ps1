@@ -87,11 +87,11 @@ services:
       - SSL_CERT_FILE=/app/mitmproxy-ca.pem
       - REQUESTS_CA_BUNDLE=/app/mitmproxy-ca.pem
       - LITELLM_LOG=INFO
-      - OPENAI_API_KEY=`${OPENAI_API_KEY:-sk-test-placeholder}
-      - DEEPSEEK_API_KEY=`${DEEPSEEK_API_KEY:-sk-test-placeholder}
-      - HUGGINGFACE_API_KEY=`${HUGGINGFACE_API_KEY:-hf_test_placeholder}
-      - VSEGPT_API_KEY=`${VSEGPT_API_KEY:-sk-test-placeholder}
-      - OPENROUTER_API_KEY=`${OPENROUTER_API_KEY:-sk-test-placeholder}
+      - OPENAI_API_KEY=$${OPENAI_API_KEY:-sk-test-placeholder}
+      - DEEPSEEK_API_KEY=$${DEEPSEEK_API_KEY:-sk-test-placeholder}
+      - HUGGINGFACE_API_KEY=$${HUGGINGFACE_API_KEY:-hf_test_placeholder}
+      - VSEGPT_API_KEY=$${VSEGPT_API_KEY:-sk-test-placeholder}
+      - OPENROUTER_API_KEY=$${OPENROUTER_API_KEY:-sk-test-placeholder}
     logging:
       driver: json-file
       options:
