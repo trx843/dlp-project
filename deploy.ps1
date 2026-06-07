@@ -28,20 +28,30 @@ Write-Host "Структура папок создана." -ForegroundColor Gree
 
 # =============== .env файл ===============
 Write-Host "Создаю .env файл..." -ForegroundColor Cyan
-@"
+@'
 # API Keys - замените на реальные значения перед использованием
 OPENAI_API_KEY=sk-test-placeholder-replace-me
 DEEPSEEK_API_KEY=sk-test-placeholder-replace-me
 HUGGINGFACE_API_KEY=hf_test_placeholder-replace-me
 VSEGPT_API_KEY=sk-test-placeholder-replace-me
 OPENROUTER_API_KEY=sk-test-placeholder-replace-me
-"@ | Out-File -FilePath "$BASE\.env" -Encoding utf8
+'@ | Out-File -FilePath "$BASE\.env" -Encoding utf8
 
 Write-Host "⚠️  ВАЖНО: Отредактируйте $BASE\.env и добавьте реальные API-ключи!" -ForegroundColor Yellow
 
+# Ограничим разрешения на .env (только Администраторы и текущий пользователь читают)
+try {
+    $user = $env:USERNAME
+    icacls "$BASE\.env" /inheritance:r /grant:r "Administrators:F" /grant:r "$user:R" | Out-Null
+    Write-Host ".env: права доступа настроены." -ForegroundColor Green
+} catch {
+    Write-Host "Не удалось настроить права .env автоматически: $_" -ForegroundColor Yellow
+}
+
 # =============== docker-compose.yml ===============
 Write-Host "Создаю docker-compose.yml..." -ForegroundColor Cyan
-@"
+@'
+version: "3.8"
 services:
   mitmproxy:
     image: mitmproxy/mitmproxy:latest
@@ -58,7 +68,7 @@ services:
         max-file: "3"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3128/"]
+      test: ["CMD", "curl", "-f", "http://localhost:3128/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -96,7 +106,7 @@ services:
         max-file: "3"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -118,26 +128,23 @@ services:
       - SSL_CERT_FILE=/app/mitmproxy-ca.pem
       - REQUESTS_CA_BUNDLE=/app/mitmproxy-ca.pem
       - LITELLM_LOG=INFO
-      - OPENAI_API_KEY=$${OPENAI_API_KEY}
-      - DEEPSEEK_API_KEY=$${DEEPSEEK_API_KEY}
-      - HUGGINGFACE_API_KEY=$${HUGGINGFACE_API_KEY}
-      - VSEGPT_API_KEY=$${VSEGPT_API_KEY}
-      - OPENROUTER_API_KEY=$${OPENROUTER_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
+      - VSEGPT_API_KEY=${VSEGPT_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
     depends_on:
-      mitmproxy:
-        condition: service_healthy
-      icap-server:
-        condition: service_healthy
-      ollama:
-        condition: service_healthy
+      - mitmproxy
+      - icap-server
+      - ollama
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health" ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -157,14 +164,13 @@ services:
         max-size: "10m"
         max-file: "3"
     depends_on:
-      litellm:
-        condition: service_healthy
+      - litellm
     volumes:
       - open-webui-data:/app/backend/data
       - ./logs/openwebui:/var/log/openwebui
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -173,23 +179,24 @@ services:
 volumes:
   ollama-data:
   open-webui-data:
-"@ | Out-File -FilePath "$BASE\docker-compose.yml" -Encoding utf8
+'@ | Out-File -FilePath "$BASE\docker-compose.yml" -Encoding utf8
 
 # =============== mitmproxy/check_dlp.py ===============
 Write-Host "Создаю скрипт mitmproxy..." -ForegroundColor Cyan
-@"
+@'
 import socket
 import uuid
 
 ICAP_HOST = "icap-server"
 ICAP_PORT = 1344
 
+# Отправка ICAP-запроса простым форматом (рабочая интеграция с нашим DLP-сервером)
 def send_icap(body, service, request_id):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(5)
         sock.connect((ICAP_HOST, ICAP_PORT))
-        
+
         # Передаём request_id через заголовок
         icap_req = (
             service.upper() + " icap://" + ICAP_HOST + ":" + str(ICAP_PORT) + "/" + service + " ICAP/1.0\r\n"
@@ -198,7 +205,7 @@ def send_icap(body, service, request_id):
             "Content-Length: " + str(len(body)) + "\r\n"
             "\r\n"
         ).encode() + body
-        
+
         sock.sendall(icap_req)
         resp = b""
         while True:
@@ -208,26 +215,38 @@ def send_icap(body, service, request_id):
             resp += chunk
         sock.close()
         return resp
-    except Exception as e:
+    except Exception:
         return None
+
 
 def parse_icap_response(resp):
     if not resp:
         return None, None
     try:
-        header_end = resp.index(b"\r\n\r\n")
+        header_end = resp.find(b"\r\n\r\n")
+        if header_end == -1:
+            return None, None
+        header_block = resp[:header_end].decode(errors='ignore')
         body = resp[header_end+4:]
-        status_line = resp[:header_end].decode()
-        status_code = int(status_line.split(" ")[1])
+        status_line = header_block.splitlines()[0]
+        parts = status_line.split()
+        if len(parts) < 2:
+            return None, None
+        status_code = int(parts[1])
         return status_code, body
-    except Exception as e:
+    except Exception:
         return None, None
+
 
 def request(flow):
     if flow.request.content:
         request_id = str(uuid.uuid4())
-        flow.metadata["dlp_request_id"] = request_id
-        
+        # Сохраняем в metadata для использования при response
+        try:
+            flow.metadata['dlp_request_id'] = request_id
+        except Exception:
+            pass
+
         resp = send_icap(flow.request.content, "reqmod", request_id)
         if resp:
             status, body = parse_icap_response(resp)
@@ -241,39 +260,67 @@ def request(flow):
             elif status == 200 and body:
                 flow.request.content = body
 
+
 def response(flow):
-    if flow.response and flow.response.content:
-        request_id = flow.metadata.get("dlp_request_id", str(uuid.uuid4()))
-        
-        resp = send_icap(flow.response.content, "respmod", request_id)
-        if resp:
-            status, body = parse_icap_response(resp)
-            if status == 403:
-                from mitmproxy import http
-                flow.response = http.Response.make(
-                    403,
-                    b'{"error":{"message":"DLP blocked","code":403}}',
-                    {"Content-Type": "application/json"}
-                )
-            elif status == 200 and body:
-                flow.response.content = body
-"@ | Out-File -FilePath "$BASE\mitmproxy\check_dlp.py" -Encoding utf8
+    if flow.response is None:
+        return
+
+    if not flow.response.content:
+        return
+
+    # Попытка получить request_id из metadata или заголовков
+    request_id = None
+    try:
+        request_id = flow.metadata.get('dlp_request_id')
+    except Exception:
+        request_id = None
+
+    if not request_id:
+        try:
+            request_id = flow.request.headers.get('X-DLP-Request-ID') or flow.request.headers.get('x-dlp-request-id')
+        except Exception:
+            request_id = None
+
+    if not request_id:
+        # Не удалось определить request_id, логируем и пропускаем
+        try:
+            print("[DLP] Missing request_id for flow, skipping response ICAP call")
+        except Exception:
+            pass
+        return
+
+    resp = send_icap(flow.response.content, "respmod", request_id)
+    if resp:
+        status, body = parse_icap_response(resp)
+        if status == 403:
+            from mitmproxy import http
+            flow.response = http.Response.make(
+                403,
+                b'{"error":{"message":"DLP blocked","code":403}}',
+                {"Content-Type": "application/json"}
+            )
+        elif status == 200 and body:
+            flow.response.content = body
+'@ | Out-File -FilePath "$BASE\mitmproxy\check_dlp.py" -Encoding utf8
 
 # =============== icap-server/Dockerfile ===============
 Write-Host "Создаю ICAP-сервер..." -ForegroundColor Cyan
-@"
+@'
 FROM python:3.11-slim
 RUN pip install python-json-logger
 COPY dlp_server.py /app/dlp_server.py
 WORKDIR /app
 EXPOSE 1344
 CMD ["python", "dlp_server.py"]
-"@ | Out-File -FilePath "$BASE\icap-server\Dockerfile" -Encoding utf8
+'@ | Out-File -FilePath "$BASE\icap-server\Dockerfile" -Encoding utf8
 
 # =============== icap-server/dlp_server.py ===============
-@"
-import json, re, hashlib, logging, os, socket, threading, base64
+Write-Host "Создаю ICAP DLP сервер..." -ForegroundColor Cyan
+@'
+import json, re, logging, os, socket, threading, base64
 from pythonjsonlogger import jsonlogger
+from datetime import datetime, timezone
+import uuid
 
 # Константы безопасности
 LOG_DIR = os.environ.get("LOG_DIR", "/var/log/icap")
@@ -322,14 +369,18 @@ sessions = {}
 sessions_lock = threading.Lock()
 
 # =============== Функции ===============
+def now_iso():
+    return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+
 def log_event(event_type, **kwargs):
     """Логирование в JSON формате для SIEM"""
     event = {
         "event_type": event_type,
-        "timestamp": json.dumps("", cls=type('', (json.JSONEncoder,), {'default': str})()),
+        "timestamp": now_iso(),
         **kwargs
     }
     logger.info(json.dumps(event, ensure_ascii=False))
+
 
 def save_attachments(body, request_id):
     """Сохранение вложений с проверкой размера"""
@@ -342,19 +393,20 @@ def save_attachments(body, request_id):
                 b64_data = m.group("b64")
                 
                 # Проверка размера перед декодированием
-                estimated_size = len(b64_data) * 0.75
+                estimated_size = int(len(b64_data) * 0.75)
                 if estimated_size > MAX_ATTACHMENT_SIZE:
                     log_event("attachment_blocked", 
                         reason="size_exceeded",
                         request_id=request_id,
-                        size=int(estimated_size),
+                        size=estimated_size,
                         max_size=MAX_ATTACHMENT_SIZE
                     )
                     continue
                 
                 file_data = base64.b64decode(b64_data)
                 ext = m.group("mime").split("/")[-1].split("+")[0]
-                fname = f"{request_id}_{i}.{ext}"
+                # безопасное имя файла
+                fname = f"{request_id}_{i}_{uuid.uuid4().hex}.{ext}"
                 
                 with open(os.path.join(ATTACHMENTS_DIR, fname), "wb") as f:
                     f.write(file_data)
@@ -373,9 +425,10 @@ def save_attachments(body, request_id):
                 continue
     except Exception as e:
         log_event("attachments_processing_error",
-            request_id=request_id,
+            request_id=request_id if 'request_id' in locals() else None,
             error=str(e)
         )
+
 
 def anonymize_text(text, mapping):
     """Анонимизация текста"""
@@ -393,6 +446,7 @@ def anonymize_text(text, mapping):
             continue
     return text
 
+
 def deanonymize_text(text, mapping):
     """Деанонимизация текста"""
     try:
@@ -401,6 +455,7 @@ def deanonymize_text(text, mapping):
     except Exception as e:
         logger.error(f"Failed to deanonymize: {e}")
     return text
+
 
 def process_json_body(body, mode, mapping=None):
     """Обработка JSON/текста с анонимизацией"""
@@ -432,52 +487,48 @@ def process_json_body(body, mode, mapping=None):
         logger.error(f"Failed to process JSON: {e}")
         return body, mapping
 
+
 def parse_icap_request(data):
-    """Парсинг ICAP запроса"""
+    """Парсинг ICAP запроса (поиск заголовков и тела)"""
     try:
-        lines = data.split(b"\r\n")
-        request_line = lines[0].decode()
+        header_end = data.find(b"\r\n\r\n")
+        if header_end == -1:
+            raise ValueError("No header/body separator found")
+        header_block = data[:header_end].decode(errors='ignore')
+        lines = header_block.split("\r\n")
+        request_line = lines[0]
         headers = {}
-        body_start = 0
-        
-        for i, line in enumerate(lines[1:], 1):
-            if line == b"":
-                body_start = i + 1
-                break
-            if b":" in line:
-                key, value = line.decode().split(":", 1)
-                headers[key.strip().lower()] = value.strip()
-        
-        body = b"\r\n".join(lines[body_start:]) if body_start < len(lines) else b""
+        for h in lines[1:]:
+            if ":" in h:
+                k, v = h.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+        body = data[header_end+4:]
         return request_line, headers, body
     except Exception as e:
         logger.error(f"Failed to parse ICAP request: {e}")
         return "", {}, b""
 
+
 def read_socket_fully(conn):
-    """Полное чтение данных из сокета"""
+    """Полное чтение данных из сокета с лимитом размера"""
     chunks = []
     total_size = 0
-    
     try:
+        conn.settimeout(5)
         while total_size < MAX_REQUEST_SIZE:
             chunk = conn.recv(8192)
             if not chunk:
                 break
             chunks.append(chunk)
             total_size += len(chunk)
-        
         if total_size >= MAX_REQUEST_SIZE:
-            log_event("request_too_large",
-                size=total_size,
-                max_size=MAX_REQUEST_SIZE
-            )
+            log_event("request_too_large", size=total_size, max_size=MAX_REQUEST_SIZE)
             return None
-        
         return b"".join(chunks)
     except Exception as e:
         logger.error(f"Error reading socket: {e}")
         return None
+
 
 def handle_client(conn, addr):
     """Обработка клиента"""
@@ -485,25 +536,17 @@ def handle_client(conn, addr):
         data = read_socket_fully(conn)
         if not data:
             return
-        
         request_line, headers, body = parse_icap_request(data)
         service = "reqmod" if "reqmod" in request_line else "respmod"
-        request_id = headers.get("x-dlp-request-id", "unknown")
+        request_id = headers.get("x-dlp-request-id") or headers.get("X-DLP-Request-ID") or str(uuid.uuid4())
 
         if service == "reqmod":
             save_attachments(body, request_id)
             text = body.decode("utf-8", errors="ignore")
             blocked = False
-            
             for word in BLOCKED_WORDS:
                 if word.lower() in text.lower():
-                    log_event("blocked",
-                        reason="keyword",
-                        keyword=word,
-                        request_id=request_id,
-                        client_ip=addr[0]
-                    )
-                    
+                    log_event("blocked", reason="keyword", keyword=word, request_id=request_id, client_ip=addr[0])
                     error_body = json.dumps({
                         "error": {
                             "message": "Заблокировано политиками информационной безопасности",
@@ -512,7 +555,6 @@ def handle_client(conn, addr):
                             "request_id": request_id
                         }
                     }, ensure_ascii=False)
-                    
                     response = (
                         "ICAP/1.0 403 Forbidden\r\n"
                         "Server: DLP-Server/1.0\r\n"
@@ -524,20 +566,16 @@ def handle_client(conn, addr):
                     conn.sendall(response.encode())
                     blocked = True
                     break
-            
             if not blocked:
                 mapping = {}
                 new_body, mapping = process_json_body(body, "anonymize", mapping)
-                
                 if mapping:
                     with sessions_lock:
-                        sessions[request_id] = mapping
-                    
-                    log_event("anonymized",
-                        request_id=request_id,
-                        fields_count=len(mapping)
-                    )
-                    
+                        sessions[request_id] = {
+                            "mapping": mapping,
+                            "ts": datetime.utcnow().timestamp()
+                        }
+                    log_event("anonymized", request_id=request_id, fields_count=len(mapping))
                     response = (
                         "ICAP/1.0 200 OK\r\n"
                         "Server: DLP-Server/1.0\r\n"
@@ -556,16 +594,11 @@ def handle_client(conn, addr):
                     conn.sendall(response.encode())
         else:
             with sessions_lock:
-                mapping = sessions.pop(request_id, {})
-            
+                sess = sessions.pop(request_id, None)
+            mapping = sess.get("mapping") if sess else {}
             if mapping:
                 new_body, _ = process_json_body(body, "deanonymize", mapping)
-                
-                log_event("deanonymized",
-                    request_id=request_id,
-                    fields_count=len(mapping)
-                )
-                
+                log_event("deanonymized", request_id=request_id, fields_count=len(mapping))
                 response = (
                     "ICAP/1.0 200 OK\r\n"
                     "Server: DLP-Server/1.0\r\n"
@@ -582,29 +615,49 @@ def handle_client(conn, addr):
                     "\r\n"
                 )
                 conn.sendall(response.encode())
-    
     except Exception as e:
-        log_event("client_error",
-            client_ip=addr[0],
-            error=str(e)
-        )
-    
+        log_event("client_error", client_ip=addr[0], error=str(e))
     finally:
         try:
             conn.close()
         except:
             pass
 
+
+def reap_expired_sessions(ttl_seconds=300):
+    """Периодическая очистка старых сессий (TTL)"""
+    while True:
+        try:
+            now = datetime.utcnow().timestamp()
+            with sessions_lock:
+                keys = list(sessions.keys())
+                for k in keys:
+                    s = sessions.get(k)
+                    if not s:
+                        continue
+                    if now - s.get("ts", 0) > ttl_seconds:
+                        sessions.pop(k, None)
+                        log_event("session_expired", request_id=k)
+        except Exception:
+            pass
+        finally:
+            import time
+            time.sleep(60)
+
+
 def main():
     """Главная функция"""
+    # запустим фоновый reaper
+    t = threading.Thread(target=reap_expired_sessions, args=(300,))
+    t.daemon = True
+    t.start()
+
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", 1344))
         server.listen(100)
-        
         log_event("server_started", port=1344)
-        
         while True:
             try:
                 conn, addr = server.accept()
@@ -616,10 +669,8 @@ def main():
             except Exception as e:
                 log_event("accept_error", error=str(e))
                 continue
-    
     except Exception as e:
         log_event("server_error", error=str(e))
-    
     finally:
         try:
             server.close()
@@ -629,29 +680,29 @@ def main():
 
 if __name__ == "__main__":
     main()
-"@ | Out-File -FilePath "$BASE\icap-server\dlp_server.py" -Encoding utf8
+'@ | Out-File -FilePath "$BASE\icap-server\dlp_server.py" -Encoding utf8
 
 # =============== litellm/config.yaml ===============
 Write-Host "Создаю конфиг LiteLLM..." -ForegroundColor Cyan
-@"
+@'
 model_list:
   - model_name: gpt-4o
     litellm_params:
       model: openai/gpt-4o
-      api_key: `${OPENAI_API_KEY}
+      api_key: ${OPENAI_API_KEY}
   - model_name: deepseek-chat
     litellm_params:
       model: deepseek/deepseek-chat
-      api_key: `${DEEPSEEK_API_KEY}
+      api_key: ${DEEPSEEK_API_KEY}
   - model_name: vsegpt
     litellm_params:
       model: openai/gpt-4o-mini
       api_base: https://api.vsegpt.ru/v1
-      api_key: `${VSEGPT_API_KEY}
+      api_key: ${VSEGPT_API_KEY}
   - model_name: openrouter
     litellm_params:
       model: openrouter/openai/gpt-4o
-      api_key: `${OPENROUTER_API_KEY}
+      api_key: ${OPENROUTER_API_KEY}
   - model_name: llama3-local
     litellm_params:
       model: ollama/llama3:8b
@@ -668,7 +719,7 @@ model_list:
 general_settings:
   cors: true
   default_stream: false
-"@ | Out-File -FilePath "$BASE\litellm\config.yaml" -Encoding utf8
+'@ | Out-File -FilePath "$BASE\litellm\config.yaml" -Encoding utf8
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Green
@@ -693,25 +744,52 @@ if (!(Test-Path "$BASE\mitmproxy-ca.pem")) {
     docker cp mitmproxy:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem "$BASE\mitmproxy-ca.pem" 2>$null
 }
 
-Write-Host "3. Запуск всех сервисов..." -ForegroundColor Yellow
+# =============== Подождём готовности сервисов (проверка health endpoints) ===============
+function Wait-HttpReady([string]$url, [int]$timeoutSec = 120) {
+    $start = Get-Date
+    while (((Get-Date) - $start).TotalSeconds -lt $timeoutSec) {
+        try {
+            $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
+            if ($r -and $r.StatusCode -ge 200 -and $r.StatusCode -lt 400) {
+                return $true
+            }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
+Write-Host "3. Ждём готовности mitmproxy..." -ForegroundColor Yellow
+if (-not (Wait-HttpReady "http://localhost:3128/" 60)) { Write-Host "mitmproxy не отвечает" -ForegroundColor Yellow }
+
+Write-Host "4. Запуск всех сервисов..." -ForegroundColor Yellow
 docker compose up -d
 
-Write-Host "4. Ожидание инициализации (30 сек)..." -ForegroundColor Yellow
+Write-Host "5. Ожидание инициализации (30 сек)..." -ForegroundColor Yellow
 Start-Sleep 30
 
-# =============== Загрузка моделей Ollama ===============
-Write-Host "5. Загрузка моделей Ollama..." -ForegroundColor Yellow
-Write-Host "   - Загружаю llama3:8b (может занять 5-10 минут)..." -ForegroundColor Cyan
-docker exec ollama ollama pull llama3:8b
-Write-Host "   ✓ llama3:8b загружена" -ForegroundColor Green
+# =============== Загрузка моделей Ollama (с проверкой готовности) ===============
+Write-Host "6. Загрузка моделей Ollama..." -ForegroundColor Yellow
+function Wait-Ollama([int]$timeoutSec = 180) {
+    $start = Get-Date
+    while (((Get-Date) - $start).TotalSeconds -lt $timeoutSec) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
+            if ($r -and $r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
 
-Write-Host "   - Загружаю mistral:7b..." -ForegroundColor Cyan
-docker exec ollama ollama pull mistral:7b
-Write-Host "   ✓ mistral:7b загружена" -ForegroundColor Green
-
-Write-Host "   - Загружаю phi3:mini..." -ForegroundColor Cyan
-docker exec ollama ollama pull phi3:mini
-Write-Host "   ✓ phi3:mini загружена" -ForegroundColor Green
+if (Wait-Ollama 180) {
+    Write-Host "ollama доступен, загружаю модели..." -ForegroundColor Cyan
+    docker exec ollama ollama pull llama3:8b 2>$null
+    docker exec ollama ollama pull mistral:7b 2>$null
+    docker exec ollama ollama pull phi3:mini 2>$null
+} else {
+    Write-Host "ollama не готов, пропускаю загрузку моделей" -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Green
